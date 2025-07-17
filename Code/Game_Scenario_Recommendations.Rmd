@@ -1,0 +1,317 @@
+---
+title: "Field Goal Probability Model"
+subtitle: Kicker Rankings & Game Scenario Recommendations
+output:
+  html_document: 
+    theme: sandstone
+    fig_width: 5
+    fig_height: 4
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE)
+library(gt)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(nflfastR)
+
+source('04_FG_Above_Expected.R')
+
+# Load in play by play data for all games since the 2010 season
+df <- load_pbp(2010:2024)
+
+# Select columns relevant to field goals
+df <- df %>% 
+  select(
+  # General Game Information 
+  season, season_type, week, game_date, game_id, away_team, home_team, spread_line, total_line, 
+  # Environmental Features
+  time_of_day, location, stadium, weather, roof, surface, temp, wind, 
+  # Play-Level Information
+  play_id, posteam, defteam, posteam_type, game_half, qtr, play_clock, quarter_seconds_remaining, yards_gained,
+  quarter_end, time, drive, down, side_of_field, yardline_100, yrdln, ydstogo, play_type, desc, series_result,
+  # Situational Features
+  score_differential, posteam_score, defteam_score, score_differential_post, ep, epa, wp, wpa, 
+  home_timeouts_remaining, away_timeouts_remaining, timeout, timeout_team, 
+  # Field Goal Information
+  field_goal_attempt, field_goal_result, kick_distance, kicker_player_name, kicker_player_id
+  )
+```
+
+------------------------------------------------------------------------
+
+# Kicker Rankings
+
+Below is a ranking of all kickers who attempted at least 10 field goals
+during the 2024 season, from best to worst. These rankings evaluate
+kickers using **Field Goals Above Expected (FGAx)**.
+
+This metric goes beyond raw totals or accuracy - FGAx accounts for kick
+difficulty by incorporating factors such as distance, weather, pressure
+situations, and kicker ability. It provides a context-aware estimate of
+**how many field goals a kicker made compared to how many they were
+statistically expected to make**. This allows us to identify kickers who
+are genuinely outperforming expectations, rather than simply benefiting
+from a high volume of short-range attempts.
+
+```{r}
+# Create kicker rankings table
+rankings <- fgax %>%
+  ungroup() %>%
+  filter(FG_attempted >= 10) %>%
+  mutate(
+    rank = row_number(),
+    field_goal_percentage = round(FG_pct * 100, 2),
+    expected_field_goals = round(xFG, 1),
+    field_goals_above_expected = round(FGAx, 1),
+    field_goal_percentage_above_expected = round(FGpct_Ax * 100, 2)
+  ) %>%
+  select(
+    Rank = rank,
+    Kicker = kicker_player_name,
+    Team = posteam,
+    `FGM` = FG_made,
+    `FGA` = FG_attempted,
+    `FG%` = field_goal_percentage,
+    `xFG` = expected_field_goals,
+    `FGAx` = field_goals_above_expected,
+    `FG%Ax` = field_goal_percentage_above_expected 
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Kicker Rankings: Field Goals Above Expected"
+  ) %>%
+  fmt_number(columns = c(`FG%`, `FG%Ax`), decimals = 1
+  )
+
+rankings
+```
+
+### Summary Insights
+
+-   **Chris Boswell (PIT)** leads the league with 4.4 FGAx on 43
+    attempts - a strong mark of elite performance across a sizable and
+    varied workload.
+-   **Brandon Aubrey (DAL)** also stands out with 3.8 FGAx, and made
+    several successful kicks from more than 60 yards.
+-   **Jake Bates (DET)** has been impressive in limited action, showing
+    early promise as a rookie.
+-   **Cameron Dicker (LAC)**, your kicker, ranks 7th overall with 2.2
+    FGAx on 44 attempts. His ability to consistently exceed expectations
+    at high volume is a clear positive and supports continued confidence
+    in high-impact situations.
+
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+# Game Scenario Recommendations
+
+### Sunday Night Football in Week 15 \@ Kansas City
+
+**Scenario Notes & Assumptions**: Week 15 \@ Kansas City (Sunday Night
+Football)
+
+-   Mid-December, road game in Kansas City
+
+-   Clear conditions with 20 mph wind gusts (no precipitation).
+
+-   Excluding final 2 minute scenarios game-tying or game-winning
+    attempts.
+
+-   Cameron Dicker or another average, non-rookie NFL kicker is making
+    the attempt
+
+-   Go-For-It Assumption: 4th-and-2 situation conversion gains a new set
+    of downs, not a touchdown (not 4th-and-goal).
+
+-   Turnover on Downs Assumption: the opponent gains possession in their
+    own territory, with expected points from that field position set to
+    0 once past midfield.
+
+    ------------------------------------------------------------------------
+
+```{r, warning = FALSE, message = FALSE, eval=FALSE}
+# Predict field goal probability at a range of distances 
+kick_distances <- seq(21, 70, by = 1)
+
+# Create data frame for predictions
+scenario_df <- data.frame(
+  kick_distance = kick_distances,
+  wind = rep(20, length(kick_distances)),
+  precipitation = rep(0, length(kick_distances)),
+  season = rep(2024, length(kick_distances)),
+  last_two_minutes = rep(0, length(kick_distances)),
+  kick_to_win = rep(0, length(kick_distances)),
+  adj_fg_pct = rep(
+    all_data %>% 
+      ungroup() %>%
+      filter(season == 2024, week == 15) %>%
+      summarise(avg_fg_pct = mean(adj_fg_pct, na.rm = TRUE)) %>%
+      pull(avg_fg_pct),
+    length(kick_distances)),
+  is_rookie = rep(0, length(kick_distances))
+) 
+
+# Predict FG probability at each distance 
+scenario_df$fg_probability <- predict(football_model, newdata = scenario_df, type = "response")
+
+# Convert to expected points at each distance 
+scenario_df$exp_points <- (scenario_df$fg_probability * 3) + ((1 - scenario_df$fg_probability) * 0)
+
+# Add a small penalty to longer kicks, in order to lean a little conservative 
+scenario_df <- scenario_df %>%
+  mutate(penalty = (kick_distance - 40) * 0.005, 
+         fg_probability_conservative = pmax(fg_probability - penalty, 0),
+         exp_points = fg_probability_conservative * 3)
+
+# Define a range of yardlines
+yardlines <- seq(1, 60, by=1)
+
+# Compute expected points using nflfastR function
+ep_df <- data.frame(
+  season = rep(2024, length(yardlines)),
+  home_team = rep("KC", length(yardlines)),
+  posteam = rep("LAC", length(yardlines)),
+  roof = rep("outdoors", length(yardlines)),
+  half_seconds_remaining = rep(1800, length(yardlines)),
+  yardline_100 = yardlines - 2,
+  down = rep(1, length(yardlines)),
+  ydstogo = rep(10, length(yardlines)),
+  posteam_timeouts_remaining = rep(3, length(yardlines)),
+  defteam_timeouts_remaining = rep(3, length(yardlines))
+)
+
+# Compute expected points from going for it at each yardline
+ep <- calculate_expected_points(ep_df) %>%
+  mutate(yardline_100 = yardline_100 + 2,
+         ep = ep/2) %>%
+  select(distance = yardline_100, go_expected_points = ep)
+
+# Identify the point where ep from going for it > ep from kicking a fg 
+scenarios <- scenario_df %>%
+  mutate(
+    yardline_100 = kick_distance - 18,
+    yard_line = 100 - yardline_100
+  ) %>%
+  select(
+    distance = yardline_100,
+    yard_line,
+    fg_expected_points = exp_points
+  ) %>%
+  left_join(ep, by = "distance") %>%
+  mutate(
+    fg_expected_points = round(fg_expected_points, 1),
+    go_expected_points = round(go_expected_points, 1)
+  )
+
+min_ydl <- scenarios %>% 
+  filter(fg_expected_points < go_expected_points) %>% 
+  summarise(min_yardline = min(distance))
+
+scenario_1 <- scenarios %>%
+  pivot_longer(
+    cols = c(fg_expected_points, go_expected_points),
+    names_to = "type",
+    values_to = "expected_points"
+  ) %>%
+  mutate(type = dplyr::recode(type, 
+                       fg_expected_points = "Field Goal Attempt",
+                       go_expected_points = "Go For It"))
+
+# Plot expected points for each decision and yardline
+yardline_plot <- ggplot(scenario_1, aes(x = distance, y = expected_points, color = type)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_vline(xintercept = as.numeric(min_ydl), color = '#001433', linetype = "dotted", linewidth = 0.7) +
+  scale_color_manual(values = c("Field Goal Attempt" = "#0080C6", "Go For It" = "#F0AE00")) +
+  labs(
+    title = "Expected Points by Distance",
+    x = "Kick Distance/Yardline (yards)",
+    y = "Expected Points",
+    color = "Decision"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    legend.position = "top"
+  ) + scale_x_continuous(breaks = seq(0, 60, by = 5))
+
+yardline_plot
+
+```
+
+#### **Recommendation**
+
+> In Week 15 at Kansas City on Sunday Night Football --- with 20 mph
+> wind gusts expected --- we recommend attempting a field goal when the
+> line of scrimmage is at or inside the opponent's 36-yard line. This
+> corresponds to a **54-yard field goal attempt or shorter**.
+>
+> This is the point at which, given the conditions, the expected points
+> from a field goal attempt exceed the expected value of going for it on
+> 4th-and-2, assuming a 50% conversion rate. Beyond this distance, the
+> chance of making the kick drops enough that the expected return no
+> longer justifies the attempt compared to the risk-adjusted value of
+> going for it.
+
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+### New, Free Agent Kicker in Week 7 \@ Home
+
+**Assumptions**
+
+-   The free agent, off-the street-kicker signed on Tuesday is a rookie,
+    is equivalent to the 33rd best kicker, worse than all kickers
+    currently on rosters, but not a high-schooler.
+
+```{r}
+# Predict field goal probability at a range of distances 
+kick_distances <- seq(11, 60, by = 1)
+
+# Create data frame for predictions
+scenario_2 <- data.frame(
+  kick_distance = kick_distances,
+  wind = rep(0, length(kick_distances)),
+  precipitation = rep(0, length(kick_distances)),
+  season = rep(2024, length(kick_distances)),
+  last_two_minutes = rep(0, length(kick_distances)),
+  adj_fg_pct = rep(all_data %>% 
+                     filter(week == 7 & season == 2024) %>% 
+                     summarise(min = min(adj_fg_pct)) %>% 
+                     pull(min), 
+                   length(kick_distances)),
+  is_rookie = rep(1, length(kick_distances))
+) 
+
+# Predict FG probability at each distance 
+scenario_2$fg_probability <- predict(football_model, newdata = scenario_2, type = "response")
+
+# Convert to binary predictions, using 0.9 threshold to maximize precision/recall and confidence
+scenario_2$fg_prediction <- if_else(scenario_2$fg_probability > 0.75, 1, 0)
+
+# Maximum distance to attempt
+max_dist <- scenario_2 %>% filter(fg_prediction == 1) %>% summarise(max(kick_distance))
+```
+
+------------------------------------------------------------------------
+
+#### **Field Goal Target Line Recommendation** 
+
+> Given that we're working with a free agent kicker signed earlier this
+> week, and factoring in the uncertainty that comes with limited
+> practice and no recent NFL game reps, our recommendation is:
+>
+> **Attempt field goals of 46 yards or less**.
+>
+> From this range, we're 75% confident the kicker will convert. Beyond
+> that, confidence drops off quickly, and attempting a field goal is not
+> recommended unless the situation demands it.
