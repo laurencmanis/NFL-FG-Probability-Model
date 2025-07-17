@@ -44,3 +44,11 @@ The model was selected for its balance of interpretability, performance, and cal
 - Kicker FG% is regressed to league average, weighted by sample size
 - Model trained on post-2010 data due to structural FG success rate changes since early 2000s
 - Data collected via nflfastR
+
+## Next Steps
+While the current model provides strong performance and interpretability, there are several ways it could be enhanced with additional data and refinement:
+- Incorporate Kick Direction: Include left/right hash location once standardized data becomes available, which could help capture directional tendencies or kicker preferences.
+- Wind Directionality: Expand weather features to capture wind relative to kick direction (e.g., headwind, tailwind, crosswind), which may further improve performance in marginal conditions.
+- Special Teams Execution: Explore ways to include snap and hold quality, if reliable proxies become available (e.g., play-level tracking or video tags).
+  
+These additions would further improve the model’s accuracy and relevance, especially in high-leverage, weather-affected, or venue-specific scenarios.
