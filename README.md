@@ -44,6 +44,9 @@ The model was selected for its balance of interpretability, performance, and cal
 - Kicker FG% is regressed to league average, weighted by sample size
 - Model trained on post-2010 data due to structural FG success rate changes since early 2000s
 - Data collected via nflfastR
+- Synthetic misses from 55+ yards were injected to address sample bias.
+  - Coaches are less likely to attempt long kicks with weaker kickers, which results in an upward bias in observed make rates at long distances.
+  - To better reflect real-world outcomes, a small number of plausible long-distance miss scenarios were added by repurposing punts taken under favorable kicking conditions, with a placeholder kicker assigned per team.
 
 ## Next Steps
 While the current model provides strong performance and interpretability, there are several ways it could be enhanced with additional data and refinement:
