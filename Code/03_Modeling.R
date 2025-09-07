@@ -19,7 +19,7 @@ cols <- c(
   "score_differential", "timeout_prior", "last_two_minutes", "team_is_trailing", "tie_game", "timeouts_remaining",
   "kick_to_win", "kick_to_tie", "total_points", "prime_time", "at_home", "on_road",
   # Kicker-Specific Features
-  "is_rookie", "adj_fg_pct", "adj_long_fg_pct",
+  "is_rookie", "adj_fg_pct", "adj_long_fg_pct","synthetic",
   # Target Variable
   "fg_made"
 )
@@ -33,74 +33,9 @@ test <- pbp %>% ungroup() %>% filter(season == 2024)
 train <- train %>% select(all_of(cols)) %>% drop_na()
 test <- test %>% select(all_of(cols)) %>% drop_na()
 
-#------------------------------------------------ RECURRING FUNCTIONS ------------------------------------------------#
-
-# Function to compute evaluation metrics 
-compute_metrics <- function(model, data, model_name = "model") {
-  # Predict field goal probabilities
-  data$pred_prob <- predict(model, newdata = data, type = "response") 
-  
-  # Compute AUC
-  roc <- roc(data$fg_made, data$pred_prob)
-  auc <- auc(roc)
-  
-  # Compute Accuracy & Precision
-  data$pred_class <- ifelse(data$pred_prob >= 0.5, 1, 0)
-  accuracy <- mean(data$pred_class == data$fg_made)
-  
-  tp <- sum(data$pred_class == 1 & data$fg_made == 1)
-  fp <- sum(data$pred_class == 1 & data$fg_made == 0)
-  precision <- ifelse((tp + fp) > 0, tp / (tp + fp), NA)
-  
-  # Compute Log Loss
-  epsilon <- 1e-15 
-  log_loss <- -mean(data$fg_made * log(pmax(data$pred_prob, epsilon)) +
-      (1 - data$fg_made) * log(pmax(1 - data$pred_prob, epsilon)))
-  
-  # Return a data frame of metrics
-  return(data.frame(
-    Model = model_name,
-    AUC = round(auc, 3),
-    Accuracy = round(accuracy, 3),
-    Precision = round(precision, 3),
-    Log_Loss = round(log_loss, 3)
-  ))
-}
-
-# Function to plot a calibration curve
-plot_calibration <- function(model, data, model_name = "Model") {
-  # Predict field goal probabilities
-  data$pred_prob <- predict(model, newdata = data, type = "response") 
-  
-  # Bin predictions into deciles
-  calibration_data <- data %>%
-    mutate(pred_bin = ntile(pred_prob, 10)) %>% 
-    group_by(pred_bin) %>%
-    summarise(
-      avg_pred = mean(pred_prob, na.rm = TRUE),
-      avg_actual = mean(fg_made, na.rm = TRUE),
-      count = n()
-    )
-  
-  # Create the plot
-  calib_plot <- ggplot(calibration_data, aes(x = avg_pred, y = avg_actual)) +
-    geom_line(color = "#0080C6", linewidth = 1) +
-    geom_point(size = 2, color = "#0080C6") +
-    geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
-    labs(
-      title = paste("Calibration Curve -", model_name),
-      x = "Predicted FG Probability",
-      y = "Actual FG%"
-    ) +
-    theme_minimal() +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
-  
-  return(calib_plot)
-}
-
 #----------------------------------------- MODELING: LOGISTIC REGRESSION -----------------------------------------#
 
-######################## Baseline Logistic Regression with 1 Feature - Kick Distance ######################## 
+#### Baseline Logistic Regression with 1 Feature - Kick Distance #### 
 baseline_model <- glm(fg_made ~ kick_distance, 
                       data = train, 
                       family = "binomial")
@@ -114,7 +49,33 @@ baseline_metrics
 # Plot calibration curve
 plot_calibration(baseline_model, train, model_name = "Baseline Model")
 
-####################################### Full Model with All Features ###################################### 
+#-------------------------------------------- INJECT SYNTHETIC MISSES -------------------------------------------#
+
+# Add in synthetic data 
+pbp_new <- rbind(pbp %>% select(all_of(cols)), synthetic %>% select(all_of(cols)))
+
+# Re-Split the data randomly into train and test sets, now including the synthetic misses
+train <- pbp_new %>% ungroup() %>% filter(season < 2024)
+test <- pbp_new %>% ungroup() %>% filter(season == 2024)
+
+train <- train %>% select(all_of(cols)) %>% drop_na()
+test <- test %>% select(all_of(cols)) %>% drop_na()
+
+#### NEW Baseline Logistic Regression with 1 Feature - Kick Distance #### 
+baseline_model <- glm(fg_made ~ kick_distance, 
+                      data = train, 
+                      family = "binomial")
+
+summary(baseline_model)
+
+# Compute evaluation metrics
+baseline_metrics <- compute_metrics(baseline_model, train, model_name = "baseline")
+baseline_metrics
+
+# Plot calibration curve
+plot_calibration(baseline_model, train, model_name = "Baseline Model")
+
+#### Full Model with All Features #### 
 full_model <- glm(fg_made ~ kick_distance + season + week + spread_line + total_line + post_season +
                     wind + temp + humidity + turf + roof_closed + precipitation + freezing + high_altitude +
                     qtr + quarter_seconds_remaining + drive + timeout_prior + last_two_minutes + score_differential + 
@@ -132,9 +93,9 @@ full_model_metrics
 # Plot calibration curve
 plot_calibration(full_model, train, model_name = "Full Model")
 
-################################## Model Based on Football Intuition #################################### 
+#### Model Based on Football Intuition #### 
 football_model <- glm(fg_made ~ kick_distance + wind + precipitation + 
-                        season + last_two_minutes + adj_fg_pct + is_rookie,
+                        season + adj_fg_pct + is_rookie,
                       data = train, 
                       family = "binomial")
 
@@ -148,10 +109,10 @@ football_model_metrics
 # Plot calibration curve
 plot_calibration(football_model, train, model_name = "Football Features Model")
 
-############################# Model with All Significant Features (p < 0.05) ############################# 
+#### Model with All Significant Features (p < 0.05) #### 
 # Coincidentally very similar feature set to football intuition model features 
-significant_model <- glm(fg_made ~ kick_distance + season + post_season + wind + 
-                            + kick_to_win + is_rookie + adj_fg_pct,
+significant_model <- glm(fg_made ~ kick_distance + season + post_season + turf + qtr +
+                          team_is_trailing + kick_to_win + is_rookie + adj_fg_pct,
                   data = train, 
                   family = "binomial")
 
@@ -164,7 +125,7 @@ significant_model_metrics
 # Plot calibration curve
 plot_calibration(significant_model, train, model_name = "Significant Features Model")
 
-###################### Model Based on Football Intuition with Interaction Terms ###################### 
+##### Model Based on Football Intuition with Interaction Terms ##### 
 interaction_model <- glm(fg_made ~ kick_distance * wind + precipitation + last_two_minutes:kick_to_win +
                          is_rookie + adj_fg_pct,
                       data = train, 
@@ -180,7 +141,7 @@ interaction_model_metrics
 # Plot calibration curve
 plot_calibration(interaction_model, train, model_name = "Interactions Model")
 
-############################## Model Based on Football Intuition with Class Weighting ################################ 
+##### Model Based on Football Intuition with Class Weighting ##### 
 # Weight missed field goals slightly higher, as they only make up ~14% of the entire dataset, more harm in false positives
 train$weight <- ifelse(train$fg_made == 0, 1.2, 1)
 test$weight <- ifelse(test$fg_made == 0, 1.2, 1)
@@ -201,7 +162,7 @@ weighted_model_metrics
 # Plot calibration curve
 plot_calibration(weighted_model, train, model_name = "Class-Weighted Model")
 
-########################################## LASSO Regression ######################################### 
+##### LASSO Regression ##### 
 # Create features matrix & target vector
 X <- model.matrix(fg_made ~ kick_distance + season + week + post_season +
                     wind + temp + humidity + turf + roof_closed + precipitation + high_altitude +
@@ -346,9 +307,6 @@ plot_calibration(weighted_model, train, model_name = "Weighted Model")
 lasso_calibration
 
 # Champion Model = Football Model
-# It’s nearly identical in AUC and other metrics as the stepwise and significant features models.
-# It shows slightly better calibration in the high-confidence range.
-# It uses fewer features, and all of the features included make sense based on football knowledge and can be explained to coaching staff.
 
 #------------------------------------------- EVALUATING ON THE TEST SET ---------------------------------------------#
 
@@ -381,7 +339,7 @@ pr <- lapply(thresholds, function(t) {
 ggplot(pr, aes(x = recall, y = precision)) +
   geom_line(color = "#0080C6", linewidth = 1) +
   geom_point(size = 3, color = "black") +
-  geom_text(aes(label = round(threshold, 2)), vjust = 1.75, hjust = 1, size = 3.5) +
+  geom_text(aes(label = round(threshold, 2)), vjust = 1.4, hjust = 1.1, size = 3.5) +
   labs(title = "Precision-Recall Curve with Thresholds",
        x = "Recall", y = "Precision") +
   theme_minimal() +
@@ -418,18 +376,13 @@ sum(test$pred_class)
 mean(test$fg_made)
 mean(test$pred_class)
 mean(test$pred_prob)
-mean(test$fg_made)
 
 #------------------------------------------- FINAL MODEL TRAINING ---------------------------------------------#
 
 # Train the final model on all available training data
 all_data <- pbp
 
-final_model <- glm(fg_made ~ kick_distance + wind + precipitation + 
-                     season + last_two_minutes + adj_fg_pct + is_rookie,
-                      data = all_data, 
-                      family = "binomial")
-
+final_model <- football_model
 
 summary(football_model)
 
@@ -445,3 +398,7 @@ sum(all_data$fg_made_prediction)
 mean(all_data$fg_made)
 mean(all_data$fg_made_prediction)
 mean(all_data$fg_probability)
+
+plot_calibration(final_model, all_data, model_name = "Football Model")
+
+
